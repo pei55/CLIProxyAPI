@@ -9,7 +9,9 @@ import (
 func TestDeepSeekApplyToRequest_SortsKeys(t *testing.T) {
 	input := []byte(`{"b":2,"a":1,"messages":[{"role":"user","content":"hi","extra":"drop"}],"c":3}`)
 	output := DeepSeekApplyToRequest("deepseek", input)
-	if !json.Valid(output) { t.Fatalf("output is not valid JSON: %s", string(output)) }
+	if !json.Valid(output) {
+		t.Fatalf("output is not valid JSON: %s", string(output))
+	}
 	outStr := string(output)
 	aIdx := strings.Index(outStr, `"a"`)
 	bIdx := strings.Index(outStr, `"b"`)
@@ -26,12 +28,20 @@ func TestDeepSeekApplyToRequest_SortsKeys(t *testing.T) {
 func TestDeepSeekApplyToRequest_PreservesSemanticFields(t *testing.T) {
 	input := []byte(`{"model":"deepseek-chat","messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"Hello"}],"temperature":0.7,"max_tokens":1000}`)
 	output := DeepSeekApplyToRequest("deepseek", input)
-	if !json.Valid(output) { t.Fatalf("invalid JSON: %s", string(output)) }
+	if !json.Valid(output) {
+		t.Fatalf("invalid JSON: %s", string(output))
+	}
 	var root map[string]any
 	json.Unmarshal(output, &root)
-	if root["messages"] == nil { t.Error("messages removed") }
-	if root["temperature"] == nil { t.Error("temperature removed") }
-	if root["max_tokens"] == nil { t.Error("max_tokens removed") }
+	if root["messages"] == nil {
+		t.Error("messages removed")
+	}
+	if root["temperature"] == nil {
+		t.Error("temperature removed")
+	}
+	if root["max_tokens"] == nil {
+		t.Error("max_tokens removed")
+	}
 }
 
 func TestDeepSeekApplyToRequest_StripsStreamOptions(t *testing.T) {
@@ -137,6 +147,45 @@ func TestDeepSeekApplyToRequest_NormalizesWhitespace(t *testing.T) {
 	// Core content should be preserved.
 	if !strings.Contains(content, "Line1") || !strings.Contains(content, "Line2") || !strings.Contains(content, "Line3") {
 		t.Errorf("core content lost: %q", content)
+	}
+}
+
+func TestDeepSeekApplyToRequest_PreservesReasoningContent(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"answer","reasoning_content":"think  \n\n\nstep2  "},{"role":"user","content":"next"}]}`)
+	output := DeepSeekApplyToRequest("deepseek", input)
+	if !json.Valid(output) {
+		t.Fatalf("output is not valid JSON: %s", string(output))
+	}
+	var root map[string]any
+	json.Unmarshal(output, &root)
+	msgs := root["messages"].([]any)
+	for _, m := range msgs {
+		mm := m.(map[string]any)
+		if mm["role"] == "assistant" {
+			if got := mm["reasoning_content"]; got != "think  \n\n\nstep2  " {
+				t.Fatalf("reasoning_content not preserved verbatim: %q; output=%s", got, string(output))
+			}
+			return
+		}
+	}
+	t.Fatalf("assistant message missing from output: %s", string(output))
+}
+
+func TestDeepSeekApplyToRequest_KeepsMessagesDistinctByReasoningContent(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"assistant","content":"same","reasoning_content":"r1"},{"role":"user","content":"next"},{"role":"assistant","content":"same","reasoning_content":"r2"}]}`)
+	output := DeepSeekApplyToRequest("deepseek", input)
+	var root map[string]any
+	json.Unmarshal(output, &root)
+	msgs := root["messages"].([]any)
+	reasoning := make([]string, 0, 2)
+	for _, m := range msgs {
+		mm := m.(map[string]any)
+		if mm["role"] == "assistant" {
+			reasoning = append(reasoning, mm["reasoning_content"].(string))
+		}
+	}
+	if len(reasoning) != 2 || reasoning[0] != "r1" || reasoning[1] != "r2" {
+		t.Errorf("messages with identical content but different reasoning_content were collapsed: %v; output=%s", reasoning, string(output))
 	}
 }
 
@@ -297,7 +346,10 @@ func TestCanonicalizeDeepSeekRequest_PreservesCodeBlocks(t *testing.T) {
 	}
 }
 func TestIsDeepSeekProvider(t *testing.T) {
-	tests := []struct { provider string; want bool }{
+	tests := []struct {
+		provider string
+		want     bool
+	}{
 		{"deepseek", true},
 		{"DeepSeek", true},
 		{"  deepseek  ", true},

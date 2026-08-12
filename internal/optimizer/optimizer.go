@@ -50,10 +50,11 @@ func roleOrder(role string) int {
 // Message field whitelist (Rule 6). Only these fields survive canonicalization.
 // =============================================================================
 var messageFieldWhitelist = map[string]bool{
-	"role":       true,
-	"content":    true,
-	"tool_calls": true,
-	"name":       true,
+	"role":              true,
+	"content":           true,
+	"reasoning_content": true,
+	"tool_calls":        true,
+	"name":              true,
 	// tool_call_id is kept on tool messages to match call→result.
 	"tool_call_id": true,
 }
@@ -446,9 +447,12 @@ func dedupMessages(msgs []map[string]any) []map[string]any {
 }
 
 func hashMessageContent(m map[string]any) string {
-	// Hash only the content, not tool_call_id or role.
+	// Hash content and reasoning_content, not tool_call_id or role.
+	// reasoning_content must be passed back to DeepSeek in thinking mode,
+	// so messages that differ only in their reasoning must not be deduped.
 	content, _ := m["content"]
-	raw, _ := json.Marshal(content)
+	reasoning, _ := m["reasoning_content"]
+	raw, _ := json.Marshal([]any{content, reasoning})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -529,6 +533,15 @@ func mergeAssistantMessages(msgs []map[string]any) []map[string]any {
 				prev["content"] = prevContent + "\n" + curContent
 			} else if curContent != "" {
 				prev["content"] = curContent
+			}
+			// Merge reasoning_content so DeepSeek thinking-mode history survives
+			// assistant message merging.
+			prevReasoning := extractTextContent(prev["reasoning_content"])
+			curReasoning := extractTextContent(m["reasoning_content"])
+			if prevReasoning != "" && curReasoning != "" {
+				prev["reasoning_content"] = prevReasoning + "\n" + curReasoning
+			} else if curReasoning != "" {
+				prev["reasoning_content"] = curReasoning
 			}
 			// Merge tool_calls: append after the last, dedup by function name.
 			prevTC, _ := prev["tool_calls"].([]any)
@@ -648,6 +661,11 @@ func normalizeStrings(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
 		for k, child := range val {
+			// reasoning_content must be passed back to DeepSeek verbatim,
+			// so skip whitespace normalization for it.
+			if k == "reasoning_content" {
+				continue
+			}
 			val[k] = normalizeStrings(child)
 		}
 		return val
