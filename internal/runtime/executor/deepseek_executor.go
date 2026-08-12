@@ -74,6 +74,7 @@ func (e *DeepSeekExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.A
 
 // Execute handles non-streaming DeepSeek chat completion requests.
 func (e *DeepSeekExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	fmt.Println("haa")
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
@@ -160,7 +161,10 @@ func (e *DeepSeekExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		helps.LogWithRequestID(ctx).WithFields(log.Fields{
+			"client_request":   string(originalPayload),
+			"upstream_request": string(translated),
+		}).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return resp, err
 	}
@@ -266,7 +270,10 @@ func (e *DeepSeekExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		helps.LogWithRequestID(ctx).WithFields(log.Fields{
+			"client_request":   string(originalPayload),
+			"upstream_request": string(translated),
+		}).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("deepseek executor: close response body error: %v", errClose)
 		}

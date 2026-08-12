@@ -210,7 +210,6 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"kimi",
 		"xai",
 		"openai-compatibility",
-		"deepseek",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
 	for _, provider := range providers {
@@ -304,8 +303,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 			}
 		}
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
-	case "openai-compatible-deepseek", "deepseek":
-		s.coreManager.RegisterExecutor(executor.NewDeepSeekExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
