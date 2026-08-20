@@ -86,12 +86,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		awaitingToolOutputs := make(map[string]struct{})
 		deferredMessages := make([][]byte, 0)
 		mergeableAssistantIndex := -1
-		// Index of the last assistant message that carried tool_calls but was
-		// flushed before its reasoning item arrived. Reasoning items that follow
-		// (e.g. Codex threads placing reasoning after function_call_output) are
-		// merged back into that message so providers like DeepSeek thinking mode
-		// receive reasoning_content on the tool-call assistant message.
-		lastToolCallAssistantIndex := -1
 
 		takePendingReasoningContent := func() string {
 			reasoningContent := pendingReasoningContent
@@ -105,33 +99,24 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 			reasoningContent := takePendingReasoningContent()
 			mergedIntoAssistant := false
-			assistantIndex := -1
 			if mergeableAssistantIndex >= 0 && mergeableAssistantIndex == len(messages)-1 {
-				assistantIndex = mergeableAssistantIndex
 				assistantMessage := gjson.ParseBytes(messages[mergeableAssistantIndex])
 				if assistantMessage.Get("role").String() == "assistant" && !assistantMessage.Get("tool_calls").Exists() {
 					updatedMessage, _ := sjson.SetBytes(messages[mergeableAssistantIndex], "tool_calls", pendingToolCalls)
 					combinedReasoning := combineOpenAIResponsesReasoning(assistantMessage.Get("reasoning_content").String(), reasoningContent)
-					if combinedReasoning != "" {
-						updatedMessage, _ = sjson.SetBytes(updatedMessage, "reasoning_content", combinedReasoning)
-					}
+					updatedMessage, _ = sjson.SetBytes(updatedMessage, "reasoning_content", combinedReasoning)
 					messages[mergeableAssistantIndex] = updatedMessage
 					mergedIntoAssistant = true
 				}
 			}
 			if !mergedIntoAssistant {
-				assistantMessage := []byte(`{"role":"assistant","tool_calls":[]}`)
+				// Providers in thinking mode (DeepSeek V4, Kimi) require
+				// reasoning_content on every tool-call assistant message, even
+				// when the turn carried no reasoning text.
+				assistantMessage := []byte(`{"role":"assistant","tool_calls":[],"reasoning_content":""}`)
 				assistantMessage, _ = sjson.SetBytes(assistantMessage, "tool_calls", pendingToolCalls)
-				if reasoningContent != "" {
-					assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", reasoningContent)
-				}
+				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", reasoningContent)
 				appendMessage(assistantMessage)
-				assistantIndex = len(messages) - 1
-			}
-			if reasoningContent == "" && assistantIndex >= 0 {
-				lastToolCallAssistantIndex = assistantIndex
-			} else {
-				lastToolCallAssistantIndex = -1
 			}
 			for _, id := range pendingToolCallIDs {
 				if strings.TrimSpace(id) == "" {
@@ -182,13 +167,15 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
-			if itemType != "function_call" && itemType != "custom_tool_call" {
+			// A reasoning item between a function_call and its output belongs to
+			// that same turn; keep the pending tool calls buffered so the
+			// reasoning is attached when the output flushes them.
+			if itemType != "function_call" && itemType != "custom_tool_call" && itemType != "reasoning" {
 				flushPendingToolCalls()
 			}
 
 			switch itemType {
 			case "message", "":
-				lastToolCallAssistantIndex = -1
 				// Handle regular message conversion
 				role := item.Get("role").String()
 				if role == "developer" {
@@ -233,9 +220,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 				if role == "assistant" {
 					reasoningContent := combineOpenAIResponsesReasoning(takePendingReasoningContent(), item.Get("reasoning_content").String())
-					if reasoningContent != "" {
-						message, _ = sjson.SetBytes(message, "reasoning_content", reasoningContent)
-					}
+					message, _ = sjson.SetBytes(message, "reasoning_content", reasoningContent)
 				}
 
 				messageIndex := appendRegularMessage(message)
@@ -245,19 +230,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 			case "reasoning":
 				reasoningContent := collectOpenAIResponsesReasoningContent(item)
-				if lastToolCallAssistantIndex >= 0 {
-					assistantMessage := gjson.ParseBytes(messages[lastToolCallAssistantIndex])
-					if assistantMessage.Get("role").String() == "assistant" && assistantMessage.Get("tool_calls").Exists() {
-						combined := combineOpenAIResponsesReasoning(assistantMessage.Get("reasoning_content").String(), reasoningContent)
-						if combined != "" {
-							updatedMessage, _ := sjson.SetBytes(messages[lastToolCallAssistantIndex], "reasoning_content", combined)
-							messages[lastToolCallAssistantIndex] = updatedMessage
-						}
-						lastToolCallAssistantIndex = -1
-						break
-					}
-					lastToolCallAssistantIndex = -1
-				}
 				pendingReasoningContent = combineOpenAIResponsesReasoning(pendingReasoningContent, reasoningContent)
 
 			case "function_call":

@@ -446,6 +446,68 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ReasoningAfterOutputAttachesToNextToolCall(t *testing.T) {
+	// A reasoning item placed after function_call_output belongs to the next
+	// tool-call turn, not the preceding one (Codex threads use this ordering).
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"next step reasoning"}]},
+			{"type":"function_call","call_id":"call_2","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
+
+	messages := gjson.GetBytes(out, "messages").Array()
+	if got := len(messages); got != 4 {
+		t.Fatalf("messages count = %d, want 4; output=%s", got, out)
+	}
+	if !messages[0].Get("reasoning_content").Exists() {
+		t.Fatalf("first tool-call assistant message missing reasoning_content; output=%s", out)
+	}
+	if got := messages[0].Get("reasoning_content").String(); got != "" {
+		t.Fatalf("first tool-call assistant reasoning_content = %q, want empty; output=%s", got, out)
+	}
+	if got := messages[2].Get("reasoning_content").String(); got != "next step reasoning" {
+		t.Fatalf("second tool-call assistant reasoning_content = %q, want %q; output=%s", got, "next step reasoning", out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AssistantMessagesKeepReasoningContentField(t *testing.T) {
+	// DeepSeek thinking mode requires reasoning_content on every assistant
+	// message in the history, including empty values, so the field must never
+	// be omitted by the conversion.
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"function_call","call_id":"call_2","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
+
+	assistantCount := 0
+	gjson.GetBytes(out, "messages").ForEach(func(_, message gjson.Result) bool {
+		if message.Get("role").String() != "assistant" {
+			return true
+		}
+		assistantCount++
+		if !message.Get("reasoning_content").Exists() {
+			t.Fatalf("assistant message missing reasoning_content; output=%s", out)
+		}
+		return true
+	})
+	if assistantCount != 3 {
+		t.Fatalf("assistant message count = %d, want 3; output=%s", assistantCount, out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBeforeUserMessage(t *testing.T) {
 	raw := []byte(`{
 		"input": [

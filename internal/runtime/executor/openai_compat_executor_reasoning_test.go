@@ -202,8 +202,10 @@ func TestOpenAICompatExecutorPreservesReasoningContentResponsesFormatStreaming(t
 
 func TestOpenAICompatExecutorPreservesReasoningContentResponsesFormatReasoningAfterToolOutput(t *testing.T) {
 	// Some Codex thread serializations place the reasoning item after the
-	// function_call_output. The tool-call assistant message must still carry
-	// reasoning_content for providers (e.g. DeepSeek thinking mode) that require it.
+	// function_call_output; it belongs to the following turn, so it must stay
+	// pending for that turn. The preceding tool-call assistant message still
+	// carries reasoning_content (empty when the turn has none) for providers
+	// (e.g. DeepSeek thinking mode) that require the field.
 	payload := `{"model":"deepseek-v4-flash","input":[
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will look it up."}]},
 		{"type":"function_call","call_id":"call_1","name":"read","arguments":"{}"},
@@ -236,19 +238,29 @@ func TestOpenAICompatExecutorPreservesReasoningContentResponsesFormatReasoningAf
 	if _, errExecute := executor.Execute(context.Background(), auth, request, options); errExecute != nil {
 		t.Fatalf("Execute error: %v", errExecute)
 	}
-	found := false
+	toolCallAssistantSeen := false
+	reasoningMessageSeen := false
 	gjson.GetBytes(upstreamBody, "messages").ForEach(func(_, message gjson.Result) bool {
-		if message.Get("role").String() != "assistant" || !message.Get("tool_calls").Exists() {
+		if message.Get("role").String() != "assistant" {
 			return true
 		}
-		found = true
-		if got := message.Get("reasoning_content").String(); got != "prior reasoning" {
-			t.Fatalf("upstream tool-call assistant reasoning_content = %q, want %q; body=%s", got, "prior reasoning", upstreamBody)
+		if message.Get("tool_calls").Exists() {
+			toolCallAssistantSeen = true
+			if !message.Get("reasoning_content").Exists() {
+				t.Fatalf("upstream tool-call assistant message missing reasoning_content; body=%s", upstreamBody)
+			}
+			return true
 		}
-		return false
+		if message.Get("reasoning_content").String() == "prior reasoning" {
+			reasoningMessageSeen = true
+		}
+		return true
 	})
-	if !found {
+	if !toolCallAssistantSeen {
 		t.Fatalf("upstream request missing tool-call assistant message; body=%s", upstreamBody)
+	}
+	if !reasoningMessageSeen {
+		t.Fatalf("upstream request dropped reasoning after function_call_output; body=%s", upstreamBody)
 	}
 }
 
