@@ -80,6 +80,18 @@ func IsRequestFault(status int, err error) bool {
 			status = statusErr.StatusCode()
 		}
 	}
+	// Payment and rate-limit statuses are authoritative even when an upstream
+	// pairs them with a generic invalid_request_error body. The credential must
+	// remain eligible for cooldown and rotation.
+	if status == http.StatusPaymentRequired || status == http.StatusTooManyRequests {
+		return false
+	}
+	// DeepSeek reports an invalid API key as 401 with the authentication_error
+	// type alongside the same generic code. Preserve that credential failure
+	// classification without weakening generic request-fault handling.
+	if status == http.StatusUnauthorized && hasAuthenticationErrorBody(err) {
+		return false
+	}
 	if hasRequestFaultBody(err) {
 		return true
 	}
@@ -112,6 +124,22 @@ func IsItemNotPersisted(message string) bool {
 		strings.Contains(lower, "items are not persisted when `store` is set to false")
 }
 
+func hasAuthenticationErrorBody(err error) bool {
+	if err == nil {
+		return false
+	}
+	body := strings.TrimSpace(err.Error())
+	if body == "" || !json.Valid([]byte(body)) {
+		return false
+	}
+	for _, path := range []string{"error.type", "type", "response.error.type", "body.error.type"} {
+		if errType := strings.ToLower(strings.TrimSpace(gjson.Get(body, path).String())); errType == "authentication_error" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasRequestFaultBody(err error) bool {
 	if err == nil {
 		return false
@@ -129,6 +157,31 @@ func hasRequestFaultBody(err error) bool {
 	for _, path := range []string{"error.type", "type", "response.error.type", "body.error.type"} {
 		errType := strings.ToLower(strings.TrimSpace(gjson.Get(body, path).String()))
 		if _, ok := requestFaultTypes[errType]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// IsClientCancellation reports whether an HTTP status code or error represents
+// a client-initiated cancellation (HTTP 499 StatusClientClosedRequest or context.Canceled).
+func IsClientCancellation(status int, err error) bool {
+	if status == StatusClientClosedRequest {
+		return true
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return true
+		}
+		type statusCoder interface {
+			StatusCode() int
+		}
+		var sc statusCoder
+		if errors.As(err, &sc) && sc != nil && sc.StatusCode() == StatusClientClosedRequest {
+			return true
+		}
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "context canceled") || strings.Contains(lower, "client closed request") {
 			return true
 		}
 	}
